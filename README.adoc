@@ -113,8 +113,6 @@ Since it still needs the Key, it should take the Key or the `extractKey` functio
 <4> The decision to cache the Response might depend on properties from the Backend Response +
 The Backend Response should be an input to the `storeInCache` function in the same way the Request should be part of the `retrieveFromCache` function. +
 
-== Implementation
-
 [source]
 .Don't check the Cache
 ----
