@@ -1,0 +1,122 @@
+:Author:                Aowss Ibrahim
+:Email:                 <aowss@yahoo.com>
+:Date:                  March 2018
+:Revision:              version 0.0.1
+:source-highlighter:    highlightjs
+:source-language:       java
+:toc:
+:toclevels:             3
+:icons:                 font
+:imagesdir:             ./img
+:data-uri:
+
+= Cache
+
+== No Proxy
+
+[plantuml, No-Proxy, svg]
+.No Proxy
+....
+@startuml
+
+Client -> Backend : Request
+Backend -> Client : Response
+
+@enduml
+....
+
+== Proxy
+
+[plantuml, Proxy, svg]
+.With Proxy
+....
+@startuml
+
+Client ->> Proxy : Request
+Proxy -> Proxy: Build **Backend** Request
+Proxy ->> Backend : **Backend** Request
+Proxy <-- Backend : **Backend** Response
+Proxy -> Proxy: Process **Backend** Response
+Client <-- Proxy : Response
+
+@enduml
+....
+
+[source, java]
+----
+public  <T, S, R> CompletableFuture<R> process( 
+    T request, <1> <2>
+    Function<T, CompletableFuture<S>> processRequest, <1> <2> <3> <4>
+    Function<S, R> processResponse <2> <3>
+);
+----
+<1> The API shoud be asynchronous +
+All the methods and functions should return `CompletionStage` or `CompletableFuture`. +
+The `processResponse` function doesn't because this is typically a fast process.
+<2> Request and Response should be generic +
+The overall method should therefore be `<T, R> CompletableFuture<R> process(T request)`.
+<3> The Backend Request and Response are different from the Request and Response +
+The Request might be an HTTP GET request while the Backend Request might be an HTTP POST request or a database query. +
+The Backend Response might be a database result, while the Response might be an HTTP response with specific headers.
+<4> The Backend Request is not used anywhere in the rest of the API so there is no need to expose it +
+The `processRequest` function should take care of the mapping from Request to Backend Request. +
+That functionality will typically be curried into that function.
+
+== Caching Proxy
+
+[plantuml, Caching-Proxy, svg]
+.With Caching Proxy
+....
+@startuml
+
+Client ->> Proxy : Request
+Proxy -> Proxy : Extract Request Key
+database Cache
+Proxy ->> Cache : Retrieve Response from Cache
+
+alt Response in Cache
+
+    Proxy <-- Cache : Cached Response
+    Client <-- Proxy : Cached Response
+
+else
+
+    Proxy -> Proxy: Build **Backend** Request
+    Proxy ->> Backend : **Backend** Request
+    Proxy <-- Backend : **Backend** Response
+    Proxy -> Proxy: Process **Backend** Response
+    Proxy ->> Cache : Store Response in Cache
+    Client <-- Proxy : Response
+
+end
+
+@enduml
+....
+
+[source, java]
+----
+public  <T, K, S, R> CompletableFuture<R> process(  
+    T request,
+    Function<T, K> extractKey, <1>
+    BiFunction<T, Function<T, K>, CompletableFuture<Optional<R>>> retrieveFromCache, <1> <2> <3>
+    Function<T, CompletableFuture<S>> processRequest,
+    Function<S, R> processResponse,
+    BiFunction<S, Function<S, R>, BiConsumer<K, R>> storeInCache <1> <4>
+);
+----
+<1> The Key that is used to store in / retrieve from the Cahce is most likely a `String` but it doesn't have to be
+<2> The Response might not be in the Cache +
+The `retrieveFromCache` function should return an `Optional`.
+<3> The requester might not want a cached Response even if one is available footnote:[the Request could be an HTTP request that contains a `no-cache` directive] +
+The `retrieveFromCache` function should take the entire Request as its input, not only the key. +
+Since it still needs the Key, it should take the Key or the `extractKey` function as a second input.
+<4> The decision to cache the Response might depend on properties from the Backend Response +
+The Backend Response should be an input to the `storeInCache` function in the same way the Request should be part of the `retrieveFromCache` function. +
+
+== Implementation
+
+[source]
+.Don't check the Cache
+----
+public BiFunction<?, Function<?,?>, CompletableFuture<Optional<?>>> dontCheckCache = (key,extractor) -> CompletableFuture.completedFuture(Optional.empty());
+----
