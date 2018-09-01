@@ -1,0 +1,5 @@
+target/*
+!target/proxy.jar
+*.idea
+*.iml
+.asciidoctor/*

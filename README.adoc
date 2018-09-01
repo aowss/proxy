@@ -44,21 +44,21 @@ Client <-- Proxy : Response
 
 [source, java]
 ----
-public  <T, S, R> CompletableFuture<R> process( 
-    T request, <1> <2>
+public  <T, S, R> CompletableFuture<R> process( <1>
+    T request, <2>
     Function<T, CompletableFuture<S>> processRequest, <1> <2> <3> <4>
     Function<S, R> processResponse <2> <3>
 );
 ----
-<1> The API shoud be asynchronous +
+<1> The API shoud be asynchronous. +
 All the methods and functions should return `CompletionStage` or `CompletableFuture`. +
 The `processResponse` function doesn't because this is typically a fast process.
-<2> Request and Response should be generic +
+<2> Request and Response should be generic. +
 The overall method should therefore be `<T, R> CompletableFuture<R> process(T request)`.
-<3> The Backend Request and Response are different from the Request and Response +
+<3> The Backend Request and Response are different from the Request and Response. +
 The Request might be an HTTP GET request while the Backend Request might be an HTTP POST request or a database query. +
 The Backend Response might be a database result, while the Response might be an HTTP response with specific headers.
-<4> The Backend Request is not used anywhere in the rest of the API so there is no need to expose it +
+<4> The Backend Request is not used anywhere in the rest of the API so there is no need to expose it. +
 The `processRequest` function should take care of the mapping from Request to Backend Request. +
 That functionality will typically be curried into that function.
 
@@ -84,7 +84,7 @@ else
     Proxy -> Proxy: Build **Backend** Request
     Proxy ->> Backend : **Backend** Request
     Proxy <-- Backend : **Backend** Response
-    Proxy -> Proxy: Process **Backend** Response
+    Proxy -> Proxy : Process **Backend** Response
     Proxy ->> Cache : Store Response in Cache
     Client <-- Proxy : Response
 
@@ -101,20 +101,95 @@ public  <T, K, S, R> CompletableFuture<R> process(
     BiFunction<T, Function<T, K>, CompletableFuture<Optional<R>>> retrieveFromCache, <1> <2> <3>
     Function<T, CompletableFuture<S>> processRequest,
     Function<S, R> processResponse,
-    BiFunction<S, Function<S, R>, BiConsumer<K, R>> storeInCache <1> <4>
+    BiFunction<S, Function<S, R>, BiFunction<K, R, CompletableFuture<Boolean>>> storeInCache <1> <4> <5>
 );
 ----
-<1> The Key that is used to store in / retrieve from the Cahce is most likely a `String` but it doesn't have to be
-<2> The Response might not be in the Cache +
+<1> The Key that is used to store in / retrieve from the Cahce is most likely a `String` but it doesn't have to be.
+<2> The Response might not be in the Cache. +
 The `retrieveFromCache` function should return an `Optional`.
-<3> The requester might not want a cached Response even if one is available footnote:[the Request could be an HTTP request that contains a `no-cache` directive] +
+<3> The requester might not want a cached Response even if one is available footnote:[The Request could be an HTTP request that contains a `no-cache` directive]. +
 The `retrieveFromCache` function should take the entire Request as its input, not only the key. +
 Since it still needs the Key, it should take the Key or the `extractKey` function as a second input.
-<4> The decision to cache the Response might depend on properties from the Backend Response +
-The Backend Response should be an input to the `storeInCache` function in the same way the Request should be part of the `retrieveFromCache` function. +
+<4> The decision to cache the Response might depend on properties from the Backend Response footnote:[These properties can come from protocol headers and / or message payload]. +
+The Backend Response should be an input to the `storeInCache` function in the same way the Request is an input to the `retrieveFromCache` function.
+<5> Even though, the `storeInCache` function is executed aysnchronously and even though the flow is not affected by its result, a `BiConsumer` makes it harder to react to the success or failure of the task footnote:[That reaction can be curried into the consumer but the framework won't know about thr outcome of the task]. +
+For this reason a `BiFunction<K, R, CompletableFuture<Boolean>>` is preferred over a `BiConsumer<K, R>`.
 
-[source]
-.Don't check the Cache
+[NOTE]
+.Time to Live
+The `storeInCache` function has to manage the time to live of the entry.
+
+== In-Flight Request Management
+
+This feature allows the framework to reduce the number of similar requests sent to the backend. +
+If multiple similar requests are received by the framework before the 1^st^ one _returns_ and stores the result in the cache, they are queued. +
+When the 1^st^ one _returns_, all the queued requests are _served_ the result.
+
+[plantuml, In-Flight, svg]
+.With In-Flight Request Management
+....
+@startuml
+
+Client ->> Proxy : Request
+Proxy -> Proxy : Extract Request Key
+database Cache
+Proxy ->> Cache : Retrieve Response from Cache
+
+alt Response in Cache
+
+    Proxy <-- Cache : Cached Response
+    Client <-- Proxy : Cached Response
+
+else
+
+    database "Requests Queue" as Queue
+    Proxy ->> Queue : Queue Request
+    Proxy <-- Queue : Number of Queued Requests
+    
+    alt No Other Request Queued
+        Proxy -> Proxy : Build **Backend** Request
+        Proxy ->> Backend : **Backend** Request
+        Proxy <-- Backend : **Backend** Response
+        Proxy -> Proxy: Process **Backend** Response
+        Proxy ->> Cache : Store Response in Cache
+        Proxy ->> Queue : Retrieve Queued Requests
+        Proxy <-- Queue : Queued Requests
+        loop All Queued Requests
+            Client <-- Proxy : Response
+        end
+    end
+
+end
+
+@enduml
+....
+
+[source, java]
 ----
-public BiFunction<?, Function<?,?>, CompletableFuture<Optional<?>>> dontCheckCache = (key,extractor) -> CompletableFuture.completedFuture(Optional.empty());
+public  <T, K, S, R> CompletableFuture<R> process(  
+    T request,
+    Function<T, K> extractKey,
+    BiFunction<T, Function<T, K>, CompletableFuture<Optional<R>>> retrieveFromCache,
+    Function<K, Boolean> queueRequest, <1>
+    Function<T, CompletableFuture<S>> processRequest,
+    Function<S, R> processResponse,
+    Function<K, List<CompletableFuture<R>>> retrievePendingRequests, <2>
+    BiFunction<S, Function<S, R>, BiFunction<K, R, CompletableFuture<Boolean>>> storeInCache
+);
 ----
+
+[NOTE]
+Another approach could be to have the requests block until the cache is filled footnote:[A timeout would control the maximum duraction of the wait].
+
+== Cache Invalidation
+
+=== Event-based
+
+== Exception Management
+
+== Concurrency
+
+== Distribution
+
+In case multiple instances of `Proxy` exist, most likely in different JVMs, you need to make sure that the `Cache` and the `Requests Queue` are shared.
+
